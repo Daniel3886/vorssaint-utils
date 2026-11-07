@@ -61,6 +61,10 @@ enum ShelfDropRoutingContract {
         var dragPlaceholder = true
         var choosingFileDropDestination = false
         var targetsMediaDrop = false
+        var targetsSendDrop = false
+        var fileDropZones: [NotchFileDropZone] = [.shelf]
+        var sent: [[URL]] = []
+        func send(_ urls: [URL]) { sent.append(urls) }
         var pinned = false
         var geometry = NotchGeometry(screen: CGRect(x: 0, y: 0, width: 1440, height: 900), safeAreaTop: 32, cameraWidth: 180)
         var expandedGeometry: NotchGeometry { geometry }
@@ -73,6 +77,11 @@ enum ShelfDropRoutingContract {
             opened.append(module)
             if pinned { self.pinned = true }
         }
+    }
+    /// Off unless a check turns it on, so the media and shelf contracts keep
+    /// their two-way choice.
+    class SendState {
+        var offersSendDrop = false
     }
     class FileToolsState {
         enum MediaState { case idle, running }
@@ -190,6 +199,7 @@ enum ShelfDropRoutingTests {
             Context.NotchSupport.visibleModules = [.files]
             Context.ShelfService.shared = Context.ShelfService()
             Context.NotchFileToolsService.shared = Context.NotchFileToolsService()
+            Context.NotchSendService.shared = Context.NotchSendService()
         }
         defer {
             board.releaseGlobally()
@@ -348,6 +358,62 @@ enum ShelfDropRoutingTests {
                 suite.expect(Context.ShelfService.shared.ordinaryAccepts == (finishOutside ? 0 : 1)
                        && !destination.choosingFileDropDestination,
                        "releasing outside cancels cleanly and releasing over the shelf preserves its route")
+            }
+
+            // The send zone: the last card, for any complete batch of files.
+            for (urls, media) in [([note], false), ([image], true), ([image, note], false), ([folder], false)] {
+                for zone in [NotchFileDropZone.shelf, .media, .send] where zone != .media || media {
+                    reset()
+                    Context.NotchSendService.shared.offersSendDrop = true
+                    board.clearContents()
+                    board.writeObjects(urls as [NSURL])
+                    let notch = Context.Notch()
+                    notch.beginFileDrop(board)
+                    suite.expect(notch.fileDropZones == (media ? [.shelf, .media, .send] : [.shelf, .send])
+                           && notch.choosingFileDropDestination,
+                           "a file drag offers the send card last, after media when it applies: \(urls.map(\.lastPathComponent))")
+                    let index = notch.fileDropZones.firstIndex(of: zone)!
+                    let area = NotchFileToolsSupport.dropArea(index: index, count: notch.fileDropZones.count,
+                                                             in: notch.geometry, size: notch.surfaceSize)
+                    _ = notch.updateFileDrop(at: CGPoint(x: area.midX, y: area.midY))
+                    suite.expect(notch.targetsSendDrop == (zone == .send) && notch.targetsMediaDrop == (zone == .media),
+                           "hovering a card highlights only that card")
+                    let accepted = notch.accept(board)
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+                    let shelved = Context.ShelfService.shared.ordinaryAccepts
+                    let optimized = Context.NotchFileToolsService.shared.mediaSession != nil
+                    switch zone {
+                    case .send:
+                        suite.expect(accepted && notch.sent == [urls] && shelved == 0 && !optimized,
+                               "the send card hands the whole batch to the chosen app without shelving it")
+                    case .media:
+                        suite.expect(accepted && notch.sent.isEmpty && shelved == 0 && optimized,
+                               "the media card still opens the media tools beside the send card")
+                    case .shelf:
+                        suite.expect(accepted && notch.sent.isEmpty && shelved == 1 && !optimized,
+                               "the shelf card still shelves files beside the send card")
+                    }
+                    suite.expect(!notch.choosingFileDropDestination && !notch.targetsSendDrop
+                           && notch.fileDropZones == [.shelf],
+                           "a finished drop removes the send card")
+                }
+            }
+            for refused in 0..<3 {
+                reset()
+                Context.NotchSendService.shared.offersSendDrop = refused != 0
+                board.clearContents()
+                switch refused {
+                case 1: board.writeObjects([URL(string: "https://example.com/page")! as NSURL])
+                case 2:
+                    let companion = NSPasteboardItem()
+                    companion.setString("companion", forType: .string)
+                    board.writeObjects([note as NSURL, companion])
+                default: board.writeObjects([note as NSURL])
+                }
+                let notch = Context.Notch()
+                notch.beginFileDrop(board)
+                suite.expect(!notch.fileDropZones.contains(.send) && !notch.choosingFileDropDestination,
+                       "no send target, a link or a mixed drag goes straight to the shelf as before")
             }
         } catch { suite.expect(false, "media drop fixtures failed: \(error)") }
     }

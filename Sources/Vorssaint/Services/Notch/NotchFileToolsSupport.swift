@@ -5,14 +5,88 @@ import Darwin
 import Foundation
 import UniformTypeIdentifiers
 
+/// Where a file dragged over the island goes: onto the shelf, into the media
+/// tools, or straight to the app chosen for sending.
+enum NotchFileDropZone: Hashable {
+    case shelf, media, send
+}
+
+/// The app or service the island's send zone hands dropped files to,
+/// stored as one string so it travels in settings backups.
+enum NotchSendTarget: Hashable {
+    /// No send zone.
+    case off
+    case airDrop
+    /// The system share menu, chosen on each drop.
+    case shareMenu
+    /// A share service by its title, such as a share extension's "Blip".
+    case service(String)
+    /// Any app by bundle identifier; dropped files open with it.
+    case app(String)
+
+    static let defaultValue = NotchSendTarget.airDrop
+
+    init(stored: String) {
+        switch stored {
+        case "off": self = .off
+        case "airdrop": self = .airDrop
+        case "menu": self = .shareMenu
+        default:
+            if stored.hasPrefix("service:"), stored.count > 8 {
+                self = .service(String(stored.dropFirst(8)))
+            } else if stored.hasPrefix("app:"), stored.count > 4 {
+                self = .app(String(stored.dropFirst(4)))
+            } else {
+                // An empty or unknown value, from a newer build or a damaged backup.
+                self = Self.defaultValue
+            }
+        }
+    }
+
+    var stored: String {
+        switch self {
+        case .off: return "off"
+        case .airDrop: return "airdrop"
+        case .shareMenu: return "menu"
+        case .service(let title): return "service:" + title
+        case .app(let identifier): return "app:" + identifier
+        }
+    }
+}
+
 enum NotchFileToolsSupport {
     static let dropSpacing: CGFloat = 12
 
-    static func mediaDropArea(in geometry: NotchGeometry, size: CGSize) -> CGRect {
+    /// The zones a drag can choose from, left to right. One zone means the
+    /// drag goes straight to the shelf with no choice shown.
+    static func dropZones(media: Bool, send: Bool) -> [NotchFileDropZone] {
+        [.shelf] + (media ? [.media] : []) + (send ? [.send] : [])
+    }
+
+    /// Column `index` of `count` equal columns across the page.
+    static func dropArea(index: Int, count: Int, in geometry: NotchGeometry, size: CGSize) -> CGRect {
+        guard count > 0, (0..<count).contains(index) else { return .zero }
         let content = geometry.contentSize(for: size)
-        return CGRect(x: size.width / 2 + dropSpacing / 2,
-                      y: geometry.pageTopInset,
-                      width: max(0, (content.width - dropSpacing) / 2), height: content.height)
+        let width = max(0, (content.width - dropSpacing * CGFloat(count - 1)) / CGFloat(count))
+        let leading = (size.width - content.width) / 2
+        return CGRect(x: leading + CGFloat(index) * (width + dropSpacing), y: geometry.pageTopInset,
+                      width: width, height: content.height)
+    }
+
+    /// The zone under `point`; the shelf takes the gaps and anything outside.
+    static func dropZone(at point: CGPoint, zones: [NotchFileDropZone],
+                         in geometry: NotchGeometry, size: CGSize) -> NotchFileDropZone {
+        guard zones.count > 1 else { return .shelf }
+        for (index, zone) in zones.enumerated().dropFirst()
+        where dropArea(index: index, count: zones.count, in: geometry, size: size).contains(point) {
+            return zone
+        }
+        return .shelf
+    }
+
+    /// The media column when it is the only choice beside the shelf.
+    static func mediaDropArea(in geometry: NotchGeometry, size: CGSize) -> CGRect {
+        dropArea(index: 1, count: 2, in: geometry, size: size)
     }
 
     static func optimizationTool(for urls: [URL]) -> MediaTool? {

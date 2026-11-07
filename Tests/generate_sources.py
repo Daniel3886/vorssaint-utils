@@ -1707,6 +1707,8 @@ def main():
           + declaration("Sources/Vorssaint/Services/Notch/NotchFileToolsService.swift", "    func updateMediaHeight(")
           + declaration("Sources/Vorssaint/Services/Notch/NotchFileToolsService.swift", "    func hideMedia(")
           + declaration("Sources/Vorssaint/Services/Notch/NotchFileToolsService.swift", "    func showMedia(")
+          + "}\nfinal class NotchSendService: SendState {\nstatic var shared = NotchSendService()\n"
+          + declaration("Sources/Vorssaint/Services/Notch/NotchSendService.swift", "    func dropContent(")
           + "}\nfinal class Notch: NotchState {\n"
           + declaration(notch, "    var canAcceptFileDrop:")
           + declaration(notch, "    func beginFileDrop(")

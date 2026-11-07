@@ -119,6 +119,9 @@ final class NotchService: ObservableObject {
     @Published private(set) var dragPlaceholder = false
     @Published private(set) var choosingFileDropDestination = false
     @Published private(set) var targetsMediaDrop = false
+    @Published private(set) var targetsSendDrop = false
+    /// The choices a file drag shows, left to right; the shelf alone shows none.
+    @Published private(set) var fileDropZones: [NotchFileDropZone] = [.shelf]
     @Published private(set) var selectedMetric: MetricDetailKind?
     @Published private(set) var captureControls: ScreenCaptureSelectionOptions?
     @Published private(set) var captureControlsCollapsed = false
@@ -2281,23 +2284,31 @@ final class NotchService: ObservableObject {
 
     func beginFileDrop(_ pasteboard: NSPasteboard) {
         guard canAcceptFileDrop else { return }
-        choosingFileDropDestination = NotchFileToolsService.shared.mediaDropContent(for: pasteboard) != nil
+        fileDropZones = NotchFileToolsSupport.dropZones(
+            media: NotchFileToolsService.shared.mediaDropContent(for: pasteboard) != nil,
+            send: NotchSendService.shared.dropContent(for: pasteboard) != nil)
+        choosingFileDropDestination = fileDropZones.count > 1
         targetsMediaDrop = false
+        targetsSendDrop = false
         open(.files, takeFocus: false)
     }
 
     @discardableResult
     func updateFileDrop(at point: CGPoint) -> Bool {
-        let targeted = choosingFileDropDestination
-            && NotchFileToolsSupport.mediaDropArea(in: expandedGeometry, size: surfaceSize).contains(point)
-        if targetsMediaDrop != targeted { targetsMediaDrop = targeted }
-        return !targeted || NotchFileToolsService.shared.canAcceptMediaDrop
+        let zone = choosingFileDropDestination
+            ? NotchFileToolsSupport.dropZone(at: point, zones: fileDropZones, in: expandedGeometry, size: surfaceSize)
+            : .shelf
+        if targetsMediaDrop != (zone == .media) { targetsMediaDrop = zone == .media }
+        if targetsSendDrop != (zone == .send) { targetsSendDrop = zone == .send }
+        return zone != .media || NotchFileToolsService.shared.canAcceptMediaDrop
     }
 
     func endFileDrop() {
         let changed = choosingFileDropDestination
         if changed { choosingFileDropDestination = false }
         if targetsMediaDrop { targetsMediaDrop = false }
+        if targetsSendDrop { targetsSendDrop = false }
+        if fileDropZones != [.shelf] { fileDropZones = [.shelf] }
         if changed, acceptsUserInteraction { refreshPresentation() }
     }
 
@@ -2310,6 +2321,15 @@ final class NotchService: ObservableObject {
         defer { endFileDrop() }
         guard canAcceptFileDrop else { return false }
         let optimize = choosingFileDropDestination && targetsMediaDrop
+        if choosingFileDropDestination, targetsSendDrop {
+            // The files go to the chosen app and are not shelved. The island
+            // steps aside for that app's window, or holds open for the menu.
+            guard let urls = NotchSendService.shared.dropContent(for: pasteboard) else { return false }
+            heldDrag = false
+            dragPlaceholder = false
+            DispatchQueue.main.async { [weak self] in self?.send(urls) }
+            return true
+        }
         let accepted = optimize
             ? NotchFileToolsService.shared.openMediaDrop(pasteboard)
             : ShelfService.shared.acceptDrop(pasteboard: pasteboard)
@@ -2322,6 +2342,16 @@ final class NotchService: ObservableObject {
             reactMascot(.celebrate, patience: 30)
         }
         return accepted
+    }
+
+    /// Hands dropped files to the send target. Only the share menu needs the
+    /// island as its anchor; every other target opens its own window.
+    private func send(_ urls: [URL]) {
+        let anchor = panel?.contentView
+        let presentsMenu = NotchSendService.shared.send(urls, from: anchor) { [weak self] open in
+            self?.keepFileInteractionOpen(open)
+        }
+        if !presentsMenu { collapse() }
     }
 
     @discardableResult

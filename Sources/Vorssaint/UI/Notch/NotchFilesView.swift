@@ -20,9 +20,9 @@ struct NotchFilesView: View {
     @Environment(\.notchSettingsPreview) private var preview
     private var text: NotchFilesStrings { FeatureStrings.notchFiles(l10n.language) }
 
-    /// Dragging media over the island asks where it goes.
+    /// Dragging media, or files while a send target is chosen, asks where they go.
     private var choosesDropDestination: Bool {
-        service.choosingFileDropDestination && AppFeature.mediaTools.isAvailable
+        service.choosingFileDropDestination
     }
 
     private var presentedMediaSession: NotchMediaSession? {
@@ -42,10 +42,18 @@ struct NotchFilesView: View {
         VStack(spacing: NotchLayout.rowSpacing) {
             if choosesDropDestination {
                 HStack(spacing: NotchFileToolsSupport.dropSpacing) {
-                    dropDestination(FeatureStrings.notch(l10n.language).files, symbol: "tray.and.arrow.down",
-                                    selected: !service.targetsMediaDrop)
-                    dropDestination(text.optimizeMedia, symbol: "wand.and.stars", selected: service.targetsMediaDrop,
-                                    available: archives.canAcceptMediaDrop)
+                    ForEach(service.fileDropZones, id: \.self) { zone in
+                        switch zone {
+                        case .shelf:
+                            dropDestination(FeatureStrings.notch(l10n.language).files, symbol: "tray.and.arrow.down",
+                                            selected: !service.targetsMediaDrop && !service.targetsSendDrop)
+                        case .media:
+                            dropDestination(text.optimizeMedia, symbol: "wand.and.stars", selected: service.targetsMediaDrop,
+                                            available: archives.canAcceptMediaDrop)
+                        case .send:
+                            sendDestination
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let session = presentedMediaSession {
@@ -122,9 +130,23 @@ struct NotchFilesView: View {
         if archives.mediaContentHeight != previous { service.refreshPresentation() }
     }
 
-    private func dropDestination(_ title: String, symbol: String, selected: Bool, available: Bool = true) -> some View {
+    /// The chosen app's own icon and name, or the share symbol for the menu.
+    @ViewBuilder private var sendDestination: some View {
+        let target = NotchSendService.shared.target
+        let option = NotchSendService.shared.display(for: target)
+        dropDestination(target == .shareMenu || option.title.isEmpty ? text.sendShare : option.title,
+                        symbol: "square.and.arrow.up", image: target == .shareMenu ? nil : option.image,
+                        selected: service.targetsSendDrop)
+    }
+
+    private func dropDestination(_ title: String, symbol: String, image: NSImage? = nil,
+                                 selected: Bool, available: Bool = true) -> some View {
         VStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 28, weight: .light))
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: 34, height: 34)
+            } else {
+                Image(systemName: symbol).font(.system(size: 28, weight: .light))
+            }
             Text(title).font(.callout.weight(.medium)).multilineTextAlignment(.center)
             if !available { Text(l10n.s.mediaRunning).font(.caption).foregroundStyle(.secondary) }
         }
